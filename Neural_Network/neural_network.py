@@ -58,7 +58,7 @@ optimizer = optim.SGD(model.parameters(), lr = 0.05)       #optimization mechani
 
 dataset = TensorDataset(xtensor, ytensor)
 #loader = DataLoader(dataset, batch_size = 1000, shuffle=True)    # this is from when I was using batching
-num_epochs = 1000     #number of learning cycles, can vary this in the future
+num_epochs = 5000     #number of learning cycles, can vary this in the future
 
 for epoch in range(num_epochs):
     
@@ -66,7 +66,7 @@ for epoch in range(num_epochs):
     loss = loss_function(model(xtensor), ytensor)       #calculate the loss at this step
     loss.backward()                                      #use back-propogation to calculate gradients for all model weights
     optimizer.step()                                    #adjusts the weights using these gradients
-    if(epoch % 10 == 0):
+    if(epoch % 50 == 0):
         print(f"Epoch {epoch}/{num_epochs} Loss:{loss.item()}")
     
 
