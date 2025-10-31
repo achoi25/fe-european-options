@@ -2,8 +2,8 @@ import pandas as pd
 import numpy as np
 import os
 
-base_input_folder = "SPX EOD Data"
-output_folder = "clean_data"
+base_input_folder = "new_raw_data"
+output_folder = "clean_data_2"
 calls_output_folder = os.path.join(output_folder, "calls")
 puts_output_folder = os.path.join(output_folder, "puts")
 os.makedirs(calls_output_folder, exist_ok=True)
