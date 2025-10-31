@@ -1,199 +1,114 @@
+import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
+from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import mean_squared_error, r2_score
-from sklearn.preprocessing import StandardScaler
-import xgboost as xgb
 
-def loadOptionData(filePath):
-    df = pd.read_csv(filePath)
-    
-    dateColumns = ['QUOTE_UNIXTIME', 'QUOTE_READTIME', 'QUOTE_DATE', 'EXPIRE_DATE']
-    for col in dateColumns:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col])
-    
-    if 'EXPIRE_UNIX' in df.columns and 'QUOTE_UNIXTIME' in df.columns:
-        df['TIME_TO_EXPIRY'] = (df['EXPIRE_UNIX'] - df['QUOTE_UNIXTIME'].astype(int)) / (24 * 3600)
-    
-    if 'UNDERLYING_LAST' in df.columns and 'STRIKE' in df.columns:
-        df['MONEYNESS'] = df['UNDERLYING_LAST'] / df['STRIKE']
-        df['LOG_MONEYNESS'] = np.log(df['MONEYNESS'])
-    
-    return df
+DATA_DIR = "clean_data_2/calls/"
+START_YEAR = 2010
+END_YEAR = 2023
 
-def prepareFeatures(df, targetColumn='C_LAST'):
-    potentialFeatures = [
-        'UNDERLYING_LAST', 'STRIKE', 'DTE', 'TIME_TO_EXPIRY', 
-        'MONEYNESS', 'LOG_MONEYNESS', 'STRIKE_DISTANCE', 'STRIKE_DISTANCE_PCT',
-        'C_DELTA', 'C_GAMMA', 'C_VEGA', 'C_THETA', 'C_RHO', 'C_IV',
-        'P_DELTA', 'P_GAMMA', 'P_VEGA', 'P_THETA', 'P_RHO', 'P_IV'
-    ]
-    
-    availableFeatures = [col for col in potentialFeatures if col in df.columns and not df[col].isnull().all()]
-    
-    X = df[availableFeatures].copy()
-    
-    if targetColumn not in df.columns:
-        print(f"Target column '{targetColumn}' not found. Available columns: {list(df.columns)}")
-        if 'C_LAST' in df.columns:
-            targetColumn = 'C_LAST'
-        elif 'P_LAST' in df.columns:
-            targetColumn = 'P_LAST'
-        else:
-            priceColumns = [col for col in df.columns if 'LAST' in col or 'PRICE' in col]
-            if priceColumns:
-                targetColumn = priceColumns[0]
-                print(f"Using {targetColumn} as target variable")
-            else:
-                print("Creating synthetic target variable for demonstration...")
-                df['SYNTHETIC_PRICE'] = df['UNDERLYING_LAST'] * 0.1 + np.random.normal(0, 10, len(df))
-                targetColumn = 'SYNTHETIC_PRICE'
-    
-    y = df[targetColumn].copy()
-    
-    X = X.fillna(X.mean())
-    y = y.fillna(y.mean())
-    
-    print(f"Using {len(availableFeatures)} features: {availableFeatures}")
-    print(f"Target variable: {targetColumn}")
-    print(f"Data shape: X {X.shape}, y {y.shape}")
-    
-    return X, y, availableFeatures
+FEATURE_COLS = [
+    'UNDERLYING_LAST', 'STRIKE', 'DTE', 'C_BID', 'C_ASK', 'C_LAST',
+    'C_VOLUME', 'C_DELTA', 'C_GAMMA', 'C_VEGA', 'C_THETA', 'C_RHO',
+    'MidPrice_Call', 'Bid_Ask_Spread_Call', 'TimeToExpiryYears'
+]
+TARGET_COL = 'C_IV'
 
-def trainXGBoostModel(X, y, testSize=0.2, randomState=42):
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=testSize, random_state=randomState
-    )
-    
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-    
-    model = xgb.XGBRegressor(
-        n_estimators=1000,
-        max_depth=6,
-        learning_rate=0.1,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        random_state=randomState,
-        objective='reg:squarederror',
-        early_stopping_rounds=10,
-        eval_metric='rmse'
-    )
-    
-    print("Training XGBoost model...")
-    
-    model.fit(
-        X_train_scaled, 
-        y_train,
-        eval_set=[(X_test_scaled, y_test)],
-        verbose=10
-    )
-    
-    return model, X_train, X_test, y_train, y_test, scaler
+results = []
 
-def evaluateModel(model, X_test, y_test, scaler):
-    X_test_scaled = scaler.transform(X_test)
-    y_pred = model.predict(X_test_scaled)
-    
-    mse = mean_squared_error(y_test, y_pred)
-    rmse = np.sqrt(mse)
-    r2 = r2_score(y_test, y_pred)
-    
-    print(f"\nModel Performance:")
-    print(f"RMSE: {rmse:.4f}")
-    print(f"R² Score: {r2:.4f}")
-    print(f"MSE: {mse:.4f}")
-    
-    return y_pred, rmse, r2
+for year in range(START_YEAR, END_YEAR + 1):
+    for month in range(1, 13):
+        ym_str = f"{year}{month:02d}"
+        filename = f"calls_spx_eod_{ym_str}.pkl"
+        filepath = os.path.join(DATA_DIR, filename)
 
-def plotPredictions(y_test, y_pred, title="Actual vs Predicted Option Prices"):
-    plt.figure(figsize=(10, 6))
-    plt.scatter(y_test, y_pred, alpha=0.5)
-    plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--', lw=2)
-    plt.xlabel('Actual Prices')
-    plt.ylabel('Predicted Prices')
-    plt.title(title)
-    plt.grid(True, alpha=0.3)
-    plt.show()
+        if not os.path.exists(filepath):
+            continue
 
-def plotFeatureImportance(model, featureNames):
-    importanceScores = model.feature_importances_
-    featureImportanceDf = pd.DataFrame({
-        'feature': featureNames,
-        'importance': importanceScores
-    }).sort_values('importance', ascending=False)
-    
-    plt.figure(figsize=(10, 6))
-    plt.barh(featureImportanceDf['feature'], featureImportanceDf['importance'])
-    plt.xlabel('Feature Importance')
-    plt.title('XGBoost Feature Importance')
-    plt.gca().invert_yaxis()
-    plt.tight_layout()
-    plt.show()
-    
-    return featureImportanceDf
+        try:
+            df = pd.read_pickle(filepath)
+        except Exception as e:
+            print(f"Error loading {filename}: {e}")
+            continue
 
-def plotTrainingHistory(model):
-    if hasattr(model, 'evals_result_'):
-        results = model.evals_result_
-        epochs = len(results['validation_0']['rmse'])
-        x_axis = range(0, epochs)
-        
-        plt.figure(figsize=(10, 6))
-        plt.plot(x_axis, results['validation_0']['rmse'], label='Train')
-        plt.legend()
-        plt.ylabel('RMSE')
-        plt.xlabel('Epochs')
-        plt.title('XGBoost Training History')
-        plt.show()
+        if not all(col in df.columns for col in FEATURE_COLS + [TARGET_COL]):
+            continue
 
-if __name__ == "__main__":
-    filePath = 'clean_data/cleaned_spx_eod_202301.csv'
-    
-    try:
-        df = loadOptionData(filePath)
-        print(f"Data loaded successfully. Shape: {df.shape}")
-        
-        X, y, featureNames = prepareFeatures(df, targetColumn='C_LAST')
-        
-        model, X_train, X_test, y_train, y_test, scaler = trainXGBoostModel(X, y)
-        
-        y_pred, rmse, r2 = evaluateModel(model, X_test, y_test, scaler)
-        
-        plotPredictions(y_test, y_pred, "Actual vs Predicted Option Prices")
-        plotTrainingHistory(model)
-        
-        featureImportanceDf = plotFeatureImportance(model, featureNames)
-        print("\nTop 5 Most Important Features:")
-        print(featureImportanceDf.head())
-        
-        print("\nExample Predictions:")
-        for i in range(5):
-            sampleIdx = i
-            sampleFeatures = X_test.iloc[sampleIdx:sampleIdx+1]
-            sampleFeaturesScaled = scaler.transform(sampleFeatures)
-            prediction = model.predict(sampleFeaturesScaled)[0]
-            actual = y_test.iloc[sampleIdx]
-            
-            print(f"Sample {i+1}: Predicted=${prediction:.2f}, Actual=${actual:.2f}, "
-                  f"Error=${abs(prediction - actual):.2f} "
-                  f"({abs(prediction - actual)/actual*100:.1f}%)")
-        
-        resultsDf = X_test.copy()
-        resultsDf['ActualPrice'] = y_test.values
-        resultsDf['PredictedPrice'] = y_pred
-        resultsDf['AbsoluteError'] = np.abs(resultsDf['ActualPrice'] - resultsDf['PredictedPrice'])
-        resultsDf['PercentageError'] = (resultsDf['AbsoluteError'] / resultsDf['ActualPrice']) * 100
-        
-        print(f"\nOverall Performance Summary:")
-        print(f"Average Absolute Error: ${resultsDf['AbsoluteError'].mean():.2f}")
-        print(f"Average Percentage Error: {resultsDf['PercentageError'].mean():.2f}%")
-        print(f"Median Percentage Error: {resultsDf['PercentageError'].median():.2f}%")
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
+        df = df.dropna(subset=FEATURE_COLS + [TARGET_COL])
+        if df.empty:
+            continue
+
+        X = df[FEATURE_COLS]
+        y = df[TARGET_COL]
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+
+        model = GradientBoostingRegressor(
+            n_estimators=200,
+            learning_rate=0.05,
+            max_depth=3,
+            random_state=42
+        )
+        model.fit(X_train, y_train)
+
+        y_pred = model.predict(X_test)
+        mse = mean_squared_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+
+        results.append({
+            'year_month': ym_str,
+            'rows': len(df),
+            'mse': mse,
+            'r2': r2
+        })
+
+        print(f"{filename}: MSE={mse:.5f}, R²={r2:.5f}")
+
+        # === Visualization for each month ===
+        plt.figure(figsize=(6, 6))
+        plt.scatter(y_test, y_pred, alpha=0.3)
+        plt.xlabel("Actual C_IV")
+        plt.ylabel("Predicted C_IV")
+        plt.title(f"Predicted vs Actual C_IV — {ym_str}")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(DATA_DIR, f"pred_vs_actual_{ym_str}.png"))
+        plt.close()
+
+        importances = model.feature_importances_
+        feature_importance_df = pd.DataFrame({
+            'Feature': FEATURE_COLS,
+            'Importance': importances
+        }).sort_values(by='Importance', ascending=False)
+
+        plt.figure(figsize=(8, 5))
+        plt.barh(feature_importance_df['Feature'], feature_importance_df['Importance'])
+        plt.xlabel("Feature Importance")
+        plt.title(f"Feature Importances — {ym_str}")
+        plt.gca().invert_yaxis()
+        plt.tight_layout()
+        plt.savefig(os.path.join(DATA_DIR, f"feature_importance_{ym_str}.png"))
+        plt.close()
+
+summary_df = pd.DataFrame(results)
+summary_path = os.path.join(DATA_DIR, "gradientboost_results.csv")
+summary_df.to_csv(summary_path, index=False)
+
+plt.figure(figsize=(10, 6))
+plt.plot(summary_df['year_month'], summary_df['mse'], marker='o', label='MSE')
+plt.plot(summary_df['year_month'], summary_df['r2'], marker='s', label='R²')
+plt.xlabel("Year-Month")
+plt.ylabel("Metric Value")
+plt.title("Model Performance Over Time")
+plt.xticks(rotation=90)
+plt.legend()
+plt.tight_layout()
+plt.savefig(os.path.join(DATA_DIR, "performance_over_time.png"))
+plt.close()
+
+print("All files processed. Results and plots saved to:", DATA_DIR)
