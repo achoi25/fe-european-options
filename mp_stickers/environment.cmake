@@ -1,1 +1,0 @@
-set(assignment_container "sp25")
